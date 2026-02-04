@@ -1,0 +1,8 @@
+Flask
+gunicorn
+mysql-connector-python
+openpyxl
+reportlab
+weasyprint
+pandas
+Werkzeug
