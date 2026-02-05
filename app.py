@@ -23,8 +23,6 @@ from email.message import EmailMessage
 from uuid import uuid4
 from datetime import datetime, timedelta
 from werkzeug.security import generate_password_hash, check_password_hash
-import sqlite3
-import os
 import psycopg2
 from psycopg2.extras import RealDictCursor
 
@@ -100,8 +98,24 @@ def allowed_photo(filename):
     return "." in filename and filename.rsplit(".", 1)[1].lower() in ALLOWED_EXTENSIONS
 
 # ---------------------- DB Helpers ----------------------
+# def get_db():
+#     database_url = os.environ.get("DATABASE_URL")
+
+#     conn = psycopg2.connect(
+#         database_url,
+#         sslmode="require",
+#         cursor_factory=RealDictCursor
+#     )
+#     return conn
 def get_db():
     database_url = os.environ.get("DATABASE_URL")
+
+    if not database_url:
+        raise RuntimeError("DATABASE_URL is not set")
+
+    # Fix Render postgres:// issue
+    if database_url.startswith("postgres://"):
+        database_url = database_url.replace("postgres://", "postgresql://", 1)
 
     conn = psycopg2.connect(
         database_url,
@@ -109,6 +123,7 @@ def get_db():
         cursor_factory=RealDictCursor
     )
     return conn
+
 
 
 # ✅ AUDIT LOG FUNCTION
@@ -868,8 +883,7 @@ def download_individual_leave_pdf(user_id):
 
 @app.route("/leave-report/<int:user_id>/<string:format>")
 def download_individual_leave_report(user_id, format):
-    conn = sqlite3.connect("database.db")
-    conn.row_factory = sqlite3.Row
+    conn = get_db()
     cur = conn.cursor()
 
     cur.execute("""
@@ -882,11 +896,16 @@ def download_individual_leave_report(user_id, format):
         FROM leaves l
         JOIN users u ON u.id = l.user_id
         LEFT JOIN departments d ON u.department_id = d.id
-        WHERE u.id = ? AND l.status = 'Approved'
+        WHERE u.id = %s AND l.status = 'Approved'
         ORDER BY l.start_date
     """, (user_id,))
+
     rows = cur.fetchall()
     conn.close()
+
+    if not rows:
+        flash("No approved leave records found.", "warning")
+        return redirect(url_for("dashboard"))
 
     if format == "excel":
         import pandas as pd
@@ -898,7 +917,8 @@ def download_individual_leave_report(user_id, format):
         return send_file(
             output,
             download_name="leave_report.xlsx",
-            as_attachment=True
+            as_attachment=True,
+            mimetype="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet"
         )
 
     # ===== PDF =====
@@ -3610,16 +3630,22 @@ def debug_leaves():
     return out
 
 def get_departments():
-    conn = sqlite3.connect("database.db")
-    conn.row_factory = sqlite3.Row
+    conn = get_db()
     cur = conn.cursor()
 
     cur.execute("""
-        SELECT DISTINCT department
-        FROM users
-        WHERE department IS NOT NULL AND department != ''
-        ORDER BY department
+        SELECT DISTINCT d.name
+        FROM departments d
+        JOIN users u ON u.department_id = d.id
+        WHERE d.name IS NOT NULL
+        ORDER BY d.name
     """)
+
+    rows = cur.fetchall()
+    conn.close()
+
+    return [row["name"] for row in rows]
+
 
 @app.route("/leave_docs/<path:filename>")
 @login_required
